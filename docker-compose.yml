@@ -141,6 +141,8 @@ services:
     environment:
       PORT: 8001
       HOST: 0.0.0.0
+    volumes:
+      - license_data:/app/licenses
 
   # ============================================================================
   # 6. Media Server (GStreamer Frame Ingestion -> MinIO -> Kafka Partitions)
