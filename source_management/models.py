@@ -56,16 +56,26 @@ class CameraSource(BaseModel):
 
 
 class CameraCreateRequest(BaseModel):
-    camera_id: str = Field(..., description="Unique identifier for camera or source")
-    name: str = Field(..., description="Human-readable name")
+    rtsp_url: str = Field(..., description="RTSP URL or video stream endpoint (ONLY REQUIRED FIELD)")
+    name: Optional[str] = Field(default="Camera Stream", description="Human-readable camera location name")
+    camera_id: Optional[str] = Field(default=None, description="Optional. Auto-locked from decrypted license if omitted")
     source_type: Optional[SourceType] = Field(default="camera", description="'camera', 'video', or 'image'")
-    rtsp_url: str = Field(..., description="RTSP URL, video file path, or image path")
-    fps: Optional[int] = 25
-    resolution: Optional[str] = "1920x1080"
-    partition: Optional[int] = None
-    is_active: Optional[bool] = True
-    features: Optional[List[str]] = ["speed_calculation", "roi_detection"]
-    metadata: Optional[Dict[str, Any]] = None
+    fps: Optional[int] = Field(default=25)
+    resolution: Optional[str] = Field(default="1920x1080")
+    partition: Optional[int] = Field(default=None)
+    is_active: Optional[bool] = Field(default=True)
+    features: Optional[List[str]] = Field(default=None)
+    metadata: Optional[Dict[str, Any]] = Field(default=None)
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "camera_id": "cam_1",
+                "rtsp_url": "rtsp://admin:password@192.168.1.100:554/stream1",
+                "name": "Main Gate Camera"
+            }
+        }
+    }
 
     @field_validator("source_type", mode="before")
     def normalize_source_type(cls, v):

@@ -72,10 +72,14 @@ class CameraService:
 
     def _write_file_atomic(self, data: Dict[str, Dict[str, Any]]):
         """Atomically writes JSON data to prevent file corruption."""
+        import shutil
         temp_path = f"{self.storage_path}.tmp"
+        if os.path.exists(temp_path) and os.path.isdir(temp_path):
+            shutil.rmtree(temp_path)
+        if os.path.exists(self.storage_path) and os.path.isdir(self.storage_path):
+            shutil.rmtree(self.storage_path)
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        # Atomic rename on Windows/Linux
         os.replace(temp_path, self.storage_path)
 
     def _verify_license_for_camera(self, camera_id: str, requested_features: Optional[List[str]] = None) -> List[str]:
@@ -107,25 +111,58 @@ class CameraService:
             return requested_features or ["speed_calculation", "roi_detection"]
 
     def create_camera(self, req: CameraCreateRequest, enforce_license: bool = True) -> CameraSource:
-        """Adds a new camera to the registry with strict license validation."""
+        """Adds or updates a camera in the registry with strict hardware license validation."""
         with self._lock:
-            cameras = self._read_file()
-            cam_id = req.camera_id.strip()
-            if cam_id in cameras:
-                raise ValueError(f"Camera with ID '{cam_id}' already exists.")
+            licensed_cam_id = None
+            authorized_features = req.features or ["speed_calculation", "roi_detection"]
 
-            # License Gate: Ensure user cannot register unauthorized camera IDs
+            # 1. License Check & Verification
             if enforce_license:
-                authorized_features = self._verify_license_for_camera(cam_id, req.features)
-            else:
-                authorized_features = req.features or ["speed_calculation", "roi_detection"]
+                try:
+                    from service_management.license_reader import LicenseReader
+                    lic = LicenseReader.load_and_verify()
+                    if not lic.is_valid:
+                        raise PermissionError(f"License Verification Failed: {lic.validation_error}")
+                    licensed_cam_id = lic.camera_id
+                except ImportError:
+                    pass
 
-            partition = req.partition if req.partition is not None else _resolve_partition(cam_id)
+            # Determine target camera_id
+            if req.camera_id and req.camera_id.strip():
+                target_cam_id = req.camera_id.strip()
+            elif licensed_cam_id:
+                target_cam_id = licensed_cam_id
+            else:
+                target_cam_id = "cam_1"
+
+            # 2. Strict License Verification for target_cam_id (Raises 403 PermissionError if unauthorized)
+            if enforce_license:
+                authorized_features = self._verify_license_for_camera(target_cam_id, req.features)
+
+            cameras = self._read_file()
+
+            # If camera already exists, update its RTSP URL & configuration
+            if target_cam_id in cameras:
+                curr = cameras[target_cam_id]
+                curr["rtsp_url"] = req.rtsp_url
+                if req.name: curr["name"] = req.name
+                if req.source_type: curr["source_type"] = req.source_type
+                if req.fps: curr["fps"] = req.fps
+                if req.resolution: curr["resolution"] = req.resolution
+                if req.is_active is not None: curr["is_active"] = req.is_active
+                if authorized_features: curr["features"] = authorized_features
+                if req.metadata: curr["metadata"].update(req.metadata)
+                curr["updated_at"] = datetime.now(timezone.utc).isoformat()
+                cameras[target_cam_id] = curr
+                self._write_file_atomic(cameras)
+                return CameraSource(**curr)
+
+            partition = req.partition if req.partition is not None else _resolve_partition(target_cam_id)
             now = datetime.now(timezone.utc).isoformat()
 
             cam_dict = {
-                "camera_id": cam_id,
-                "name": req.name,
+                "camera_id": target_cam_id,
+                "name": req.name or f"Camera {target_cam_id}",
                 "source_type": req.source_type or "camera",
                 "rtsp_url": req.rtsp_url,
                 "fps": req.fps or 25,
@@ -137,7 +174,7 @@ class CameraService:
                 "created_at": now,
                 "updated_at": now
             }
-            cameras[cam_id] = cam_dict
+            cameras[target_cam_id] = cam_dict
             self._write_file_atomic(cameras)
             return CameraSource(**cam_dict)
 

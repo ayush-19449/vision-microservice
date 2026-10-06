@@ -166,6 +166,16 @@ class LicenseReader:
             )
 
         # All checks passed!
+        try:
+            import json
+            save_path = os.path.join(os.path.dirname(__file__), "..", "license_fastapi_system", "decrypted_license.json")
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            with open(save_path, "w", encoding="utf-8") as out_f:
+                json.dump(payload, out_f, indent=2)
+            logger.info(f"[LicenseReader] Saved decrypted license data to: {save_path}")
+        except Exception as save_err:
+            logger.warning(f"[LicenseReader] Could not save decrypted license payload: {save_err}")
+
         return LicenseInfo(
             license_id=payload.get("license_id", ""),
             camera_id=payload.get("camera_id", ""),
