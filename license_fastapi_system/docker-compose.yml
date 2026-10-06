@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  # FastAPI License Microservice
+  license-api:
+    build: .
+    container_name: camera_license_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./camera.gry:/app/camera.gry
+    environment:
+      - SYSTEM_MAC=${HOST_MAC:-}
+      - LICENSE_SECRET_KEY=${LICENSE_SECRET_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

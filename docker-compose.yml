@@ -1,0 +1,212 @@
+version: "3.8"
+
+networks:
+  vision_net:
+    driver: bridge
+    name: vision_net
+
+volumes:
+  kafka_data:
+    driver: local
+  minio_data:
+    driver: local
+  camera_data:
+    driver: local
+  license_data:
+    driver: local
+
+services:
+  # ============================================================================
+  # 1. Apache Kafka (KRaft Mode - High Throughput Message Broker)
+  # ============================================================================
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: vision_kafka
+    hostname: kafka
+    networks:
+      - vision_net
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:29092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_MESSAGE_MAX_BYTES: 10485760
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 10485760
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9092' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # 2. Kafka Web UI (Live Visual Dashboard for Topics, Messages & Partitions)
+  # ============================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: vision_kafka_ui
+    networks:
+      - vision_net
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "Vision-Cluster"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:9092"
+      DYNAMIC_CONFIG_ENABLED: 'true'
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ============================================================================
+  # 3. MinIO Object Storage (S3 API + Web Console)
+  # ============================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: vision_minio
+    hostname: minio
+    networks:
+      - vision_net
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO Web Console UI
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:-minioadmin}"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO Bucket Auto-Provisioner
+  minio-init:
+    image: minio/mc:latest
+    container_name: vision_minio_init
+    networks:
+      - vision_net
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb myminio/vision-frames || true;
+      /usr/bin/mc anonymous set download myminio/vision-frames || true;
+      exit 0;
+      "
+
+  # ============================================================================
+  # 4. License Microservice (AES-256-GCM Hardware License System)
+  # ============================================================================
+  license-service:
+    build:
+      context: .
+      dockerfile: license_fastapi_system/Dockerfile
+    container_name: vision_license_api
+    networks:
+      - vision_net
+    ports:
+      - "8000:8000"
+    environment:
+      LICENSE_SECRET_KEY: "${LICENSE_SECRET_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
+      SYSTEM_MAC_OVERRIDE: "${SYSTEM_MAC_OVERRIDE:-}"
+    volumes:
+      - license_data:/app/licenses
+
+  # ============================================================================
+  # 5. Source Management (Camera CRUD & Stream Registry API)
+  # ============================================================================
+  source-management:
+    build:
+      context: .
+      dockerfile: source_management/Dockerfile
+    container_name: vision_source_management
+    networks:
+      - vision_net
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: 8001
+      HOST: 0.0.0.0
+    volumes:
+      - camera_data:/app/source_management
+
+  # ============================================================================
+  # 6. Media Server (GStreamer Frame Ingestion -> MinIO -> Kafka Partitions)
+  # ============================================================================
+  media-server:
+    build:
+      context: .
+      dockerfile: media_server/Dockerfile
+    container_name: vision_media_server
+    networks:
+      - vision_net
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      MINIO_BUCKET_NAME: "vision-frames"
+      SOURCE_MANAGEMENT_URL: "http://source-management:8001/sources/cameras?active_only=true"
+      SYNC_INTERVAL_SEC: 10
+      USE_TEST_STREAM: "${USE_TEST_STREAM:-true}"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      source-management:
+        condition: service_started
+    restart: unless-stopped
+
+  # ============================================================================
+  # 7. Service Orchestrator (Hardware License Reader & Worker Spawner)
+  # ============================================================================
+  service-orchestrator:
+    build:
+      context: .
+      dockerfile: service_management/Dockerfile
+    container_name: vision_orchestrator
+    networks:
+      - vision_net
+    ports:
+      - "8002:8002"
+    environment:
+      PORT: 8002
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      LICENSE_FILE_PATH: "/app/licenses/camera.gry"
+      SOURCE_MANAGEMENT_URL: "http://source-management:8001/sources/cameras"
+      SYSTEM_MAC: "${SYSTEM_MAC:-}"
+      DOCKER_HOST: "unix:///var/run/docker.sock"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - license_data:/app/licenses
+      - ./service_management/services.yml:/app/service_management/services.yml:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      source-management:
+        condition: service_started
+    restart: unless-stopped

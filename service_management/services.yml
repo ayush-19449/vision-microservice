@@ -1,0 +1,148 @@
+# ==============================================================================
+# Vision Microservices Catalog Specification
+# Defines Docker images, resource constraints (CPU/GPU/RAM), dependencies, and env
+# ==============================================================================
+
+version: "1.0"
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Base Vehicle Detection (Core object tracker & detector)
+  # ----------------------------------------------------------------------------
+  vehicle_detection:
+    service_name: "vehicle_detection"
+    display_name: "Vehicle Detection & Multi-Object Tracking"
+    docker_image: "vision-vehicle-detector:v1.0"
+    description: "YOLOv8/v10 based vehicle detection and ByteTrack object tracking"
+    dependencies: []
+    resources:
+      cpu: "2.0"
+      memory: "4G"
+      gpu:
+        enabled: true
+        gpu_count: 1
+        device_ids: "all"  # or "0", "1", "0,1"
+        driver: "nvidia"
+    environment:
+      PIPELINE_TYPE: "vehicle_detection"
+      MODEL_WEIGHTS: "/models/yolov8m_vehicles.engine"
+      CONFIDENCE_THRESHOLD: "0.55"
+      IOU_THRESHOLD: "0.45"
+      TRACKER_TYPE: "bytetrack"
+    restart_policy: "unless-stopped"
+
+  # ----------------------------------------------------------------------------
+  # 2. ANPR (Automatic Number Plate Recognition) - Depends on Vehicle Detection
+  # ----------------------------------------------------------------------------
+  anpr:
+    service_name: "anpr"
+    display_name: "Automatic Number Plate Recognition (ANPR / LPR)"
+    docker_image: "vision-anpr-service:v1.0"
+    description: "Plate crop detection and OCR character recognition from tracked vehicles"
+    dependencies:
+      - "vehicle_detection"
+    resources:
+      cpu: "2.0"
+      memory: "4G"
+      gpu:
+        enabled: true
+        gpu_count: 1
+        device_ids: "all"
+        driver: "nvidia"
+    environment:
+      PIPELINE_TYPE: "anpr"
+      PLATE_DETECTOR_MODEL: "/models/plate_detect_yolo.engine"
+      OCR_MODEL_TYPE: "paddleocr"
+      OCR_LANGUAGE: "latin"
+      MIN_PLATE_CONFIDENCE: "0.75"
+    restart_policy: "unless-stopped"
+
+  # ----------------------------------------------------------------------------
+  # 3. Speed Detection / Calculation - Depends on Vehicle Detection
+  # ----------------------------------------------------------------------------
+  speed_detection:
+    service_name: "speed_detection"
+    display_name: "Speed Calculation & Radar Integration"
+    docker_image: "vision-speed-service:v1.0"
+    description: "Homography matrix perspective transform to compute vehicle speed"
+    dependencies:
+      - "vehicle_detection"
+    resources:
+      cpu: "1.5"
+      memory: "2G"
+      gpu:
+        enabled: false
+        gpu_count: 0
+    environment:
+      PIPELINE_TYPE: "speed_detection"
+      CALIBRATION_HEIGHT_METERS: "4.5"
+      DISTANCE_PER_PIXEL: "0.08"
+      MAX_SPEED_LIMIT_KMH: "60"
+      SPEED_VIOLATION_THRESHOLD_KMH: "65"
+    restart_policy: "unless-stopped"
+
+  # ----------------------------------------------------------------------------
+  # 4. ROI Intrusion / Boundary Detection - Depends on Vehicle Detection
+  # ----------------------------------------------------------------------------
+  roi_detection:
+    service_name: "roi_detection"
+    display_name: "Region of Interest & Boundary Crossing"
+    docker_image: "vision-roi-service:v1.0"
+    description: "Monitors polygon zones for unauthorized entry, dwell time, and illegal parking"
+    dependencies:
+      - "vehicle_detection"
+    resources:
+      cpu: "1.0"
+      memory: "2G"
+      gpu:
+        enabled: false
+        gpu_count: 0
+    environment:
+      PIPELINE_TYPE: "roi_detection"
+      DETECTION_MODE: "entry_exit"
+      DWELL_TIME_ALERT_SECONDS: "30"
+    restart_policy: "unless-stopped"
+
+  # ----------------------------------------------------------------------------
+  # 5. Face Detection & Recognition (Standalone)
+  # ----------------------------------------------------------------------------
+  face_detection:
+    service_name: "face_detection"
+    display_name: "Face Detection & Recognition"
+    docker_image: "vision-face-service:v1.0"
+    description: "Facial detection, 5-point landmark alignment, and embedding extraction"
+    dependencies: []
+    resources:
+      cpu: "2.0"
+      memory: "4G"
+      gpu:
+        enabled: true
+        gpu_count: 1
+        device_ids: "all"
+        driver: "nvidia"
+    environment:
+      PIPELINE_TYPE: "face_detection"
+      FACE_MODEL: "buffalo_l"
+      CONFIDENCE_THRESHOLD: "0.65"
+    restart_policy: "unless-stopped"
+
+  # ----------------------------------------------------------------------------
+  # 6. Vehicle Counter / Traffic Statistics
+  # ----------------------------------------------------------------------------
+  vehicle_counter:
+    service_name: "vehicle_counter"
+    display_name: "Vehicle Counter & Directional Traffic Stats"
+    docker_image: "vision-counter-service:v1.0"
+    description: "Line crossing counter and vehicle class aggregator"
+    dependencies:
+      - "vehicle_detection"
+    resources:
+      cpu: "1.0"
+      memory: "2G"
+      gpu:
+        enabled: false
+        gpu_count: 0
+    environment:
+      PIPELINE_TYPE: "vehicle_counter"
+      COUNTING_LINE_DIRECTION: "bidirectional"
+    restart_policy: "unless-stopped"

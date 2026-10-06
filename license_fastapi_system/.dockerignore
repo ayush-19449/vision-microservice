@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.csv
+*.zip
+*.jpeg
+*.jpg
+*.mp4
+.git
+.gitignore
+scratch/
+cv_licensing_system/
+camera_license_service/
