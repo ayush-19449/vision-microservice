@@ -127,7 +127,8 @@ class VisionOrchestrator:
                 "services_spawned": []
             }
 
-        logger.info(f"[ORCHESTRATOR] License decrypted successfully! ID={lic.license_id}, Target Camera={lic.camera_id}")
+        logger.info(f"[ORCHESTRATOR] License decrypted successfully! ID={lic.license_id}, Service={lic.service_name}, MAC={lic.mac_address}")
+        logger.info(f"[ORCHESTRATOR] Duration: {lic.start_date or lic.issued_at} to {lic.end_date or lic.expires_at}")
         logger.info(f"[ORCHESTRATOR] Authorized License Features: {lic.features}")
 
         # 2. Auto-Register Camera in Source Management

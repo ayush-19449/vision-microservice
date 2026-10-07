@@ -10,8 +10,11 @@ from typing import Optional, Dict, Any, Union, Callable
 
 try:
     from confluent_kafka import Producer, KafkaError, KafkaException
+    from confluent_kafka.admin import AdminClient, NewTopic
 except ImportError:
     Producer = None
+    AdminClient = None
+    NewTopic = None
     KafkaError = None
     KafkaException = Exception
 
@@ -53,6 +56,31 @@ class VisionKafkaProducer:
         self.frames_sent = 0
         self.events_sent = 0
         self.delivery_errors = 0
+
+        # Auto-ensure default topics exist with 16 partitions
+        self._ensure_topics_exist()
+
+    def _ensure_topics_exist(self, num_partitions: int = 16):
+        """Auto-provisions Kafka topics with 16 partitions if they do not exist."""
+        if not AdminClient or not NewTopic:
+            return
+        try:
+            admin = AdminClient({'bootstrap.servers': self.config.bootstrap_servers})
+            topic_config = {"retention.ms": "86400000"}  # 24 Hours retention
+            topics = [
+                NewTopic(self.config.frame_topic, num_partitions=num_partitions, replication_factor=1, config=topic_config),
+                NewTopic(self.config.event_topic, num_partitions=num_partitions, replication_factor=1, config=topic_config),
+                NewTopic(self.config.alert_topic, num_partitions=num_partitions, replication_factor=1, config=topic_config)
+            ]
+            fs = admin.create_topics(topics)
+            for topic_name, f in fs.items():
+                try:
+                    f.result()
+                    logger.info(f"[KafkaProducer] Created topic '{topic_name}' with {num_partitions} partitions")
+                except Exception:
+                    pass
+        except Exception as err:
+            logger.debug(f"[KafkaProducer] Topic auto-provisioning check: {err}")
 
     def _default_delivery_report(self, err, msg):
         """Internal delivery callback for librdkafka events."""
@@ -112,6 +140,20 @@ class VisionKafkaProducer:
             self.frames_sent += 1
             self.producer.poll(0)
             return True
+        except (KafkaException, BufferError, Exception):
+            try:
+                self.producer.produce(
+                    topic=target_topic,
+                    key=key_bytes,
+                    value=val_bytes,
+                    on_delivery=self._default_delivery_report
+                )
+                self.frames_sent += 1
+                self.producer.poll(0)
+                return True
+            except Exception as fallback_err:
+                logger.error(f"[KafkaProducer] Fallback produce failed: {fallback_err}")
+                return False
         except BufferError:
             self.producer.poll(50)
             try:

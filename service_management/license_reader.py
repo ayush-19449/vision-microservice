@@ -26,22 +26,35 @@ logger = logging.getLogger("LicenseReader")
 
 @dataclass
 class LicenseInfo:
-    """Structured view of decrypted license data."""
+    """Structured view of decrypted service license data."""
     license_id: str
-    camera_id: str
-    camera_name: str
-    rtsp_url: str = ""
-    source_type: str = "camera"
+    service_name: str = "vision_analytics_service"
     mac_address: str = ""
-    container_name: str = ""
-    topic: str = "camera.frames"
-    partition: int = 0
+    start_date: str = ""
+    end_date: str = ""
     issued_at: str = ""
     expires_at: str = ""
+    duration_days: int = 0
     features: List[str] = field(default_factory=list)
     is_valid: bool = False
     validation_error: Optional[str] = None
     raw_data: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def camera_id(self) -> str:
+        return self.raw_data.get("camera_id", "*")
+
+    @property
+    def camera_name(self) -> str:
+        return self.raw_data.get("camera_name", self.service_name)
+
+    @property
+    def topic(self) -> str:
+        return self.raw_data.get("topic", "camera.frames")
+
+    @property
+    def partition(self) -> int:
+        return self.raw_data.get("partition", 0)
 
 
 class LicenseReader:
@@ -53,11 +66,15 @@ class LicenseReader:
     def load_and_verify(license_path: str = "camera.gry") -> LicenseInfo:
         """
         Loads an encrypted license file from disk or string, decrypts it,
-        and enforces MAC matching and expiration date.
+        and enforces MAC matching and duration validity (start_date to end_date).
         """
         # Resolve path
-        if not os.path.isabs(license_path):
+        if not os.path.isabs(license_path) or not os.path.exists(license_path):
+            filename = os.path.basename(license_path)
             candidates = [
+                os.path.join("/app/licenses", filename),
+                os.path.join("licenses", filename),
+                os.path.join(os.path.dirname(__file__), "..", "licenses", filename),
                 license_path,
                 os.path.join(os.path.dirname(__file__), "..", license_path),
                 os.path.join(os.path.dirname(__file__), "..", "license_fastapi_system", license_path),
@@ -70,12 +87,10 @@ class LicenseReader:
         if not os.path.exists(license_path):
             return LicenseInfo(
                 license_id="",
-                camera_id="",
-                camera_name="",
+                service_name="",
                 mac_address="",
-                container_name="",
-                topic="",
-                partition=0,
+                start_date="",
+                end_date="",
                 issued_at="",
                 expires_at="",
                 features=[],
@@ -88,8 +103,8 @@ class LicenseReader:
                 encrypted_blob = f.read().strip()
         except Exception as e:
             return LicenseInfo(
-                license_id="", camera_id="", camera_name="", mac_address="",
-                container_name="", topic="", partition=0, issued_at="", expires_at="",
+                license_id="", service_name="", mac_address="",
+                start_date="", end_date="", issued_at="", expires_at="",
                 features=[], is_valid=False, validation_error=f"Could not read license file: {e}"
             )
 
@@ -99,29 +114,51 @@ class LicenseReader:
         except Exception as e:
             logger.error(f"[LicenseReader] Decryption / MAC tag verification failed: {e}")
             return LicenseInfo(
-                license_id="", camera_id="", camera_name="", mac_address="",
-                container_name="", topic="", partition=0, issued_at="", expires_at="",
+                license_id="", service_name="", mac_address="",
+                start_date="", end_date="", issued_at="", expires_at="",
                 features=[], is_valid=False, validation_error=f"License decryption/tamper verification failed: {e}"
             )
 
-        # 2. Expiration validation
+        # 2. Expiration & Duration validation
         try:
-            exp_str = payload.get("expires_at", "")
+            start_str = payload.get("start_date") or payload.get("issued_at", "")
+            exp_str = payload.get("end_date") or payload.get("expires_at", "")
+            now_dt = datetime.now(timezone.utc)
+
+            if start_str:
+                start_dt = datetime.fromisoformat(start_str)
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                if now_dt < start_dt:
+                    return LicenseInfo(
+                        license_id=payload.get("license_id", ""),
+                        service_name=payload.get("service_name", "vision_analytics_service"),
+                        mac_address=payload.get("mac_address", ""),
+                        start_date=start_str,
+                        end_date=exp_str,
+                        issued_at=payload.get("issued_at", ""),
+                        expires_at=exp_str,
+                        duration_days=payload.get("duration_days", 0),
+                        features=payload.get("features", []),
+                        is_valid=False,
+                        validation_error=f"License not yet active (start_date: {start_str})",
+                        raw_data=payload
+                    )
+
             exp_dt = datetime.fromisoformat(exp_str)
             if exp_dt.tzinfo is None:
                 exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-            now_dt = datetime.now(timezone.utc)
+
             if now_dt >= exp_dt:
                 return LicenseInfo(
                     license_id=payload.get("license_id", ""),
-                    camera_id=payload.get("camera_id", ""),
-                    camera_name=payload.get("camera_name", ""),
+                    service_name=payload.get("service_name", "vision_analytics_service"),
                     mac_address=payload.get("mac_address", ""),
-                    container_name=payload.get("container_name", ""),
-                    topic=payload.get("topic", ""),
-                    partition=payload.get("partition", 0),
+                    start_date=start_str,
+                    end_date=exp_str,
                     issued_at=payload.get("issued_at", ""),
                     expires_at=exp_str,
+                    duration_days=payload.get("duration_days", 0),
                     features=payload.get("features", []),
                     is_valid=False,
                     validation_error=f"License expired at {exp_str} (current UTC: {now_dt.isoformat()})",
@@ -130,17 +167,16 @@ class LicenseReader:
         except Exception as e:
             return LicenseInfo(
                 license_id=payload.get("license_id", ""),
-                camera_id=payload.get("camera_id", ""),
-                camera_name=payload.get("camera_name", ""),
+                service_name=payload.get("service_name", "vision_analytics_service"),
                 mac_address=payload.get("mac_address", ""),
-                container_name=payload.get("container_name", ""),
-                topic=payload.get("topic", ""),
-                partition=payload.get("partition", 0),
+                start_date="",
+                end_date="",
                 issued_at=payload.get("issued_at", ""),
                 expires_at="",
+                duration_days=0,
                 features=payload.get("features", []),
                 is_valid=False,
-                validation_error=f"Invalid expiration date format: {e}",
+                validation_error=f"Invalid duration/expiration date format: {e}",
                 raw_data=payload
             )
 
@@ -151,24 +187,26 @@ class LicenseReader:
             logger.warning(f"[LicenseReader] Hardware MAC mismatch: Host={system_mac}, License={licensed_mac}")
             return LicenseInfo(
                 license_id=payload.get("license_id", ""),
-                camera_id=payload.get("camera_id", ""),
-                camera_name=payload.get("camera_name", ""),
+                service_name=payload.get("service_name", "vision_analytics_service"),
                 mac_address=licensed_mac,
-                container_name=payload.get("container_name", ""),
-                topic=payload.get("topic", ""),
-                partition=payload.get("partition", 0),
+                start_date=payload.get("start_date", ""),
+                end_date=payload.get("end_date", ""),
                 issued_at=payload.get("issued_at", ""),
                 expires_at=payload.get("expires_at", ""),
+                duration_days=payload.get("duration_days", 0),
                 features=payload.get("features", []),
                 is_valid=False,
                 validation_error=f"Hardware MAC mismatch! Host={system_mac}, Licensed={licensed_mac}",
                 raw_data=payload
             )
 
-        # All checks passed!
+        # Save decrypted cache
         try:
             import json
-            save_path = os.path.join(os.path.dirname(__file__), "..", "license_fastapi_system", "decrypted_license.json")
+            save_dir = os.path.join(os.path.dirname(__file__), "..", "licenses")
+            if not os.path.exists(save_dir):
+                save_dir = os.path.join(os.path.dirname(__file__), "..", "license_fastapi_system")
+            save_path = os.path.join(save_dir, "decrypted_license.json")
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             with open(save_path, "w", encoding="utf-8") as out_f:
                 json.dump(payload, out_f, indent=2)
@@ -178,16 +216,13 @@ class LicenseReader:
 
         return LicenseInfo(
             license_id=payload.get("license_id", ""),
-            camera_id=payload.get("camera_id", ""),
-            camera_name=payload.get("camera_name", ""),
-            rtsp_url=payload.get("rtsp_url", f"rtsp://127.0.0.1:8554/{payload.get('camera_id', '')}"),
-            source_type=payload.get("source_type", "camera"),
+            service_name=payload.get("service_name", "vision_analytics_service"),
             mac_address=licensed_mac,
-            container_name=payload.get("container_name", ""),
-            topic=payload.get("topic", "camera.frames"),
-            partition=payload.get("partition", 0),
+            start_date=payload.get("start_date", payload.get("issued_at", "")),
+            end_date=payload.get("end_date", payload.get("expires_at", "")),
             issued_at=payload.get("issued_at", ""),
             expires_at=payload.get("expires_at", ""),
+            duration_days=payload.get("duration_days", 0),
             features=payload.get("features", []),
             is_valid=True,
             validation_error=None,

@@ -33,15 +33,15 @@ for i in range(max_retries):
         else:
             logger.info(f"Bucket '{bucket_name}' already exists")
 
-        # Set anonymous download policy (public read)
+        # Set anonymous download policy (public read & list)
         policy = f'''{{
             "Version": "2012-10-17",
             "Statement": [
                 {{
                     "Effect": "Allow",
                     "Principal": {{"AWS": ["*"]}},
-                    "Action": ["s3:GetObject"],
-                    "Resource": ["arn:aws:s3:::{bucket_name}/*"]
+                    "Action": ["s3:GetBucketLocation", "s3:ListBucket", "s3:GetObject"],
+                    "Resource": ["arn:aws:s3:::{bucket_name}", "arn:aws:s3:::{bucket_name}/*"]
                 }}
             ]
         }}'''

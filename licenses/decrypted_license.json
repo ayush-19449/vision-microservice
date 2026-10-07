@@ -1,0 +1,18 @@
+{
+  "license_id": "LIC-1791398223",
+  "service_name": "vision_production",
+  "mac_address": "1c:f6:4c:3f:82:9a",
+  "start_date": "2026-10-07T18:37:03.101094+00:00",
+  "end_date": "2027-10-07T18:37:03.101094+00:00",
+  "issued_at": "2026-10-07T18:37:03.101094+00:00",
+  "expires_at": "2027-10-07T18:37:03.101094+00:00",
+  "duration_days": 365,
+  "features": [
+    "speed_calculation",
+    "roi_detection",
+    "vehicle_counter",
+    "anpr",
+    "face_detection"
+  ],
+  "version": "2.0"
+}

@@ -1,13 +1,40 @@
-"""
-FastAPI Router for Camera Source Management CRUD.
-"""
+import os
+import shutil
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, File, UploadFile, status
 
 from .models import CameraSource, CameraCreateRequest, CameraUpdateRequest
 from .camera_service import get_camera_service
 
 router = APIRouter(prefix="/sources/cameras", tags=["Source Management - Cameras"])
+
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
+
+
+@router.post("/upload", status_code=status.HTTP_201_CREATED)
+async def upload_source_file(file: UploadFile = File(...)):
+    """
+    Upload a local video (.mp4, .mov) or image (.jpg, .png) file for testing feeds.
+    Saves to shared container storage and returns the local file path to use in 'url'.
+    """
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    safe_filename = os.path.basename(file.filename or "uploaded_source.mp4")
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        file_size = os.path.getsize(file_path)
+        return {
+            "status": "success",
+            "filename": safe_filename,
+            "file_path": file_path,
+            "content_type": file.content_type,
+            "size_bytes": file_size,
+            "message": f"File uploaded successfully. Pass 'url': '{file_path}' when creating camera with source_type='video' or 'image'."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
 
 
 @router.post("", response_model=CameraSource, status_code=status.HTTP_201_CREATED)

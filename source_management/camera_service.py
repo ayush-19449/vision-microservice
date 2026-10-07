@@ -3,6 +3,7 @@ File-based Camera Registry and CRUD Service.
 Uses thread-safe atomic JSON file persistence without requiring external database dependencies.
 """
 import os
+import re
 import json
 import logging
 import threading
@@ -27,39 +28,11 @@ class CameraService:
         self._init_storage()
 
     def _init_storage(self):
-        """Creates default storage file with sample data if it does not exist."""
+        """Creates default storage file if it does not exist."""
         if not os.path.exists(self.storage_path):
             os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
-            default_cameras = {
-                "cam_1": {
-                    "camera_id": "cam_1",
-                    "name": "North_Entrance_Main_Gate",
-                    "rtsp_url": "rtsp://127.0.0.1:8554/cam1",
-                    "fps": 30,
-                    "resolution": "1920x1080",
-                    "partition": 1,
-                    "is_active": True,
-                    "features": ["speed_calculation", "vehicle_counter"],
-                    "metadata": {"calibration_height": 3.5, "location": "Building A"},
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                },
-                "cam_2": {
-                    "camera_id": "cam_2",
-                    "name": "South_Parking_Exit",
-                    "rtsp_url": "rtsp://127.0.0.1:8554/cam2",
-                    "fps": 25,
-                    "resolution": "1920x1080",
-                    "partition": 2,
-                    "is_active": True,
-                    "features": ["roi_detection", "vehicle_counter"],
-                    "metadata": {"roi_points": [[100, 200], [500, 200], [500, 600], [100, 600]]},
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                }
-            }
-            self._write_file_atomic(default_cameras)
-            logger.info(f"[CameraService] Initialized default camera registry at: {self.storage_path}")
+            self._write_file_atomic({})
+            logger.info(f"[CameraService] Initialized camera registry at: {self.storage_path}")
 
     def _read_file(self) -> Dict[str, Dict[str, Any]]:
         """Reads JSON data from file."""
@@ -84,22 +57,14 @@ class CameraService:
 
     def _verify_license_for_camera(self, camera_id: str, requested_features: Optional[List[str]] = None) -> List[str]:
         """
-        Validates that the requested Camera ID and features are permitted by active hardware license.
-        Raises PermissionError if license is missing, MAC mismatched, or camera_id is unauthorized.
+        Validates that active hardware service license is valid.
+        Raises PermissionError if license is missing, MAC mismatched, or expired.
         """
         try:
             from service_management.license_reader import LicenseReader
             lic = LicenseReader.load_and_verify()
             if not lic.is_valid:
-                raise PermissionError(f"Cannot register camera: Hardware license verification failed! ({lic.validation_error})")
-
-            # Check camera_id permission
-            allowed_cam = lic.camera_id
-            if allowed_cam not in ("*", "all") and camera_id.strip() != allowed_cam.strip():
-                raise PermissionError(
-                    f"Registration Rejected: Camera ID '{camera_id}' is NOT licensed on this machine! "
-                    f"Your active license only permits Camera ID: '{allowed_cam}'."
-                )
+                raise PermissionError(f"Cannot register camera source: Hardware license verification failed! ({lic.validation_error})")
 
             # Restrict features to licensed features only
             if requested_features:
@@ -113,42 +78,51 @@ class CameraService:
     def create_camera(self, req: CameraCreateRequest, enforce_license: bool = True) -> CameraSource:
         """Adds or updates a camera in the registry with strict hardware license validation."""
         with self._lock:
-            licensed_cam_id = None
             authorized_features = req.features or ["speed_calculation", "roi_detection"]
 
-            # 1. License Check & Verification
-            if enforce_license:
-                try:
-                    from service_management.license_reader import LicenseReader
-                    lic = LicenseReader.load_and_verify()
-                    if not lic.is_valid:
-                        raise PermissionError(f"License Verification Failed: {lic.validation_error}")
-                    licensed_cam_id = lic.camera_id
-                except ImportError:
-                    pass
-
             # Determine target camera_id
-            if req.camera_id and req.camera_id.strip():
-                target_cam_id = req.camera_id.strip()
-            elif licensed_cam_id:
-                target_cam_id = licensed_cam_id
-            else:
+            target_cam_id = (req.camera_id or req.cam_id or "").strip()
+            if not target_cam_id:
                 target_cam_id = "cam_1"
 
-            # 2. Strict License Verification for target_cam_id (Raises 403 PermissionError if unauthorized)
+            # 1. Strict License Verification (Raises 403 PermissionError if invalid MAC/expired)
             if enforce_license:
                 authorized_features = self._verify_license_for_camera(target_cam_id, req.features)
 
             cameras = self._read_file()
 
-            # If camera already exists, update its RTSP URL & configuration
+            target_name = req.name or req.cam_name or f"Camera {target_cam_id}"
+            target_url = req.rtsp_url or req.url or f"rtsp://127.0.0.1:8554/{target_cam_id}"
+            target_source_type = req.source_type or "rtsp"
+            target_location = req.location or req.source_location
+
+            # Resolution calculation
+            target_resolution = req.resolution
+            if not target_resolution and req.width and req.height:
+                target_resolution = f"{req.width}x{req.height}"
+            elif not target_resolution:
+                target_resolution = "1920x1080"
+
+            # Parse width/height if needed
+            w = req.width
+            h = req.height
+            if (not w or not h) and target_resolution:
+                match = re.match(r'^(\d+)x(\d+)$', target_resolution.strip(), re.I)
+                if match:
+                    if not w: w = int(match.group(1))
+                    if not h: h = int(match.group(2))
+
+            # If camera already exists, update its configuration
             if target_cam_id in cameras:
                 curr = cameras[target_cam_id]
-                curr["rtsp_url"] = req.rtsp_url
-                if req.name: curr["name"] = req.name
-                if req.source_type: curr["source_type"] = req.source_type
+                curr["rtsp_url"] = target_url
+                if target_name: curr["name"] = target_name
+                if target_source_type: curr["source_type"] = target_source_type
                 if req.fps: curr["fps"] = req.fps
-                if req.resolution: curr["resolution"] = req.resolution
+                if target_resolution: curr["resolution"] = target_resolution
+                if w: curr["width"] = w
+                if h: curr["height"] = h
+                if target_location is not None: curr["location"] = target_location
                 if req.is_active is not None: curr["is_active"] = req.is_active
                 if authorized_features: curr["features"] = authorized_features
                 if req.metadata: curr["metadata"].update(req.metadata)
@@ -162,11 +136,14 @@ class CameraService:
 
             cam_dict = {
                 "camera_id": target_cam_id,
-                "name": req.name or f"Camera {target_cam_id}",
-                "source_type": req.source_type or "camera",
-                "rtsp_url": req.rtsp_url,
+                "name": target_name,
+                "source_type": target_source_type,
+                "rtsp_url": target_url,
+                "width": w or 1920,
+                "height": h or 1080,
+                "resolution": target_resolution,
+                "location": target_location,
                 "fps": req.fps or 25,
-                "resolution": req.resolution or "1920x1080",
                 "partition": partition,
                 "is_active": req.is_active if req.is_active is not None else True,
                 "features": authorized_features,

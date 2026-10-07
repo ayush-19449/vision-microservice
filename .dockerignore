@@ -1,5 +1,14 @@
+**/._*
 ._*
 .DS_Store
+**/.DS_Store
 .git
 .idea
 .vscode
+__pycache__
+**/__pycache__
+*.pyc
+*.mov
+*.mp4
+*.avi
+*.mkv

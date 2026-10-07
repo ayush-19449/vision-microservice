@@ -109,7 +109,14 @@ class MinioFrameStorage:
             self._save_local(object_key, frame_bytes)
 
         protocol = "https" if self.secure else "http"
-        http_url = f"{protocol}://{self.endpoint}/{self.bucket_name}/{object_key}"
+        public_endpoint = os.getenv("MINIO_PUBLIC_ENDPOINT", "localhost:9000")
+        
+        # Internal Docker network endpoint
+        internal_url = f"{protocol}://{self.endpoint}/{self.bucket_name}/{object_key}"
+        
+        # Public Host Browser accessible endpoint
+        host_endpoint = self.endpoint.replace("minio:9000", public_endpoint).replace("minio", "localhost")
+        public_http_url = f"{protocol}://{host_endpoint}/{self.bucket_name}/{object_key}"
         s3_uri = f"s3://{self.bucket_name}/{object_key}"
 
         return {
@@ -117,7 +124,8 @@ class MinioFrameStorage:
             "bucket": self.bucket_name,
             "key": object_key,
             "s3_uri": s3_uri,
-            "http_url": http_url,
+            "http_url": public_http_url,
+            "internal_url": internal_url,
             "file_size_bytes": file_size
         }
 

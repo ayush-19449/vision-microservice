@@ -31,30 +31,18 @@ app = FastAPI(
 
 # ----------------- SCHEMAS -----------------
 
+# ----------------- SCHEMAS -----------------
+
 class LicenseGenerateRequest(BaseModel):
-    camera_id: str = Field(default="cam-001", description="Camera identifier (e.g. cam-001, cam-002)")
-    camera_name: str = Field(default="Office_Main_Gate", description="Human-readable camera location name")
-    mac_address: Optional[str] = Field(default=None, description="Target machine MAC (defaults to server MAC if null)")
-    days_valid: int = Field(default=365, description="Days license remains valid (negative for expired testing)")
-    container_name: str = Field(default="cam001-container", description="Authorized Docker container name")
-    topic: str = Field(default="traffic.camera.events", description="Shared Kafka topic for all cameras")
-    partition: Optional[int] = Field(
-        default=None,
-        description="Kafka partition (auto-assigned from camera_id if not provided: cam-001=0, cam-002=1 ...)"
-    )
+    service_name: str = Field(default="vision_analytics_service", description="Target service name")
+    mac_address: Optional[str] = Field(default=None, description="Target machine MAC address (defaults to server MAC if null)")
+    start_date: Optional[str] = Field(default=None, description="License start date ISO format (e.g. '2026-10-07T00:00:00Z'). Defaults to current UTC time")
+    end_date: Optional[str] = Field(default=None, description="License end date ISO format (e.g. '2027-10-07T00:00:00Z'). Auto-computed from days_valid if omitted")
+    days_valid: int = Field(default=365, description="Duration in days if end_date is omitted")
     features: List[str] = Field(
         default=["speed_calculation", "roi_detection", "vehicle_counter"],
-        description="List of enabled features / use cases"
+        description="List of enabled service features / use cases"
     )
-
-def _auto_assign_partition(camera_id: str, explicit_partition: Optional[int]) -> int:
-    if explicit_partition is not None:
-        return explicit_partition
-    import re
-    match = re.search(r'(\d+)$', camera_id)
-    if match:
-        return int(match.group(1)) - 1
-    return 0
 
 class LicenseVerifyRequest(BaseModel):
     license_payload: str = Field(..., description="Encrypted base64url license string (.gry content)")
@@ -86,7 +74,7 @@ def root():
     """Service health check and hardware identity summary."""
     sys_mac = get_system_mac_address()
     return {
-        "service": "Camera License & Container Spawner Microservice",
+        "service": "Service License & Container Spawner Microservice",
         "status": "online",
         "system_mac": sys_mac,
         "supported_use_cases": list(USE_CASE_CATALOG.keys()),
@@ -103,24 +91,44 @@ def get_mac():
 
 @app.post("/api/v1/license/generate", tags=["License Vendor API"])
 def generate_license(req: LicenseGenerateRequest):
-    """Generate an encrypted .gry license file bound to a MAC address."""
+    """Generate an encrypted .gry license file bound to a service name, duration, and hardware MAC address."""
     target_mac = normalize_mac(req.mac_address) if req.mac_address else get_system_mac_address()
-    assigned_partition = _auto_assign_partition(req.camera_id, req.partition)
     now = datetime.now(timezone.utc)
-    expiry = now + timedelta(days=req.days_valid)
+
+    if req.start_date:
+        try:
+            start_dt = datetime.fromisoformat(req.start_date)
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            start_dt = now
+    else:
+        start_dt = now
+
+    if req.end_date:
+        try:
+            end_dt = datetime.fromisoformat(req.end_date)
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            duration_days = (end_dt - start_dt).days
+        except Exception:
+            end_dt = start_dt + timedelta(days=req.days_valid)
+            duration_days = req.days_valid
+    else:
+        end_dt = start_dt + timedelta(days=req.days_valid)
+        duration_days = req.days_valid
 
     payload = {
         "license_id": f"LIC-{int(now.timestamp())}",
-        "camera_id": req.camera_id,
-        "camera_name": req.camera_name,
+        "service_name": req.service_name,
         "mac_address": target_mac,
-        "container_name": req.container_name,
-        "topic": req.topic,
-        "partition": assigned_partition,
-        "issued_at": now.isoformat(),
-        "expires_at": expiry.isoformat(),
+        "start_date": start_dt.isoformat(),
+        "end_date": end_dt.isoformat(),
+        "issued_at": start_dt.isoformat(),
+        "expires_at": end_dt.isoformat(),
+        "duration_days": duration_days,
         "features": req.features,
-        "version": "1.0"
+        "version": "2.0"
     }
 
     encrypted_blob = encrypt_license_data(payload)
@@ -131,7 +139,7 @@ def generate_license(req: LicenseGenerateRequest):
 
     return {
         "status": "success",
-        "message": f"License generated for '{req.camera_id}' → partition {assigned_partition}",
+        "message": f"License generated for service '{req.service_name}' (Duration: {start_dt.strftime('%Y-%m-%d')} to {end_dt.strftime('%Y-%m-%d')})",
         "file_name": output_path,
         "encrypted_payload": encrypted_blob,
         "license_data": payload
@@ -185,11 +193,10 @@ def spawn_container(req: ContainerSpawnRequest):
     Spawns a Docker container based on cam_id and use_case.
     Security Pipeline:
       1. Validates AES-256-GCM license decryption & auth tag
-      2. Verifies license expiry
+      2. Verifies license validity duration (start_date to end_date)
       3. Validates hardware MAC address match
-      4. Checks that cam_id matches the licensed camera
-      5. Checks that use_case is authorized in licensed features
-      6. Spawns and configures the container with appropriate environment & isolation
+      4. Checks that use_case is authorized in licensed features
+      5. Spawns and configures the container with appropriate environment & isolation
     """
     result = spawner.spawn(
         cam_id=req.cam_id,
@@ -248,12 +255,30 @@ def _verify_payload_data(encrypted_str: str) -> LicenseResponse:
 
     licensed_mac = normalize_mac(data.get("mac_address", ""))
 
-    # 2. Expiration check
+    # 2. Expiration and Duration check
     try:
-        exp_dt = datetime.fromisoformat(data.get("expires_at", ""))
+        start_str = data.get("start_date") or data.get("issued_at", "")
+        exp_str = data.get("end_date") or data.get("expires_at", "")
+
+        now_dt = datetime.now(timezone.utc)
+
+        if start_str:
+            start_dt = datetime.fromisoformat(start_str)
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+            if now_dt < start_dt:
+                return LicenseResponse(
+                    is_valid=False,
+                    status_code="LICENSE_NOT_YET_ACTIVE",
+                    message=f"License is not active until {start_dt.isoformat()}",
+                    system_mac=sys_mac,
+                    licensed_mac=licensed_mac,
+                    license_details=data
+                )
+
+        exp_dt = datetime.fromisoformat(exp_str)
         if exp_dt.tzinfo is None:
             exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-        now_dt = datetime.now(timezone.utc)
 
         if now_dt >= exp_dt:
             return LicenseResponse(
@@ -268,7 +293,7 @@ def _verify_payload_data(encrypted_str: str) -> LicenseResponse:
         return LicenseResponse(
             is_valid=False,
             status_code="LICENSE_FORMAT_INVALID",
-            message=f"Invalid expiration date: {e}",
+            message=f"Invalid duration/expiration date: {e}",
             system_mac=sys_mac,
             licensed_mac=licensed_mac
         )

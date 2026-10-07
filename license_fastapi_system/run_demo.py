@@ -38,7 +38,7 @@ def main():
     valid_file = "demo_valid.gry"
     create_license_file(
         output_file=valid_file,
-        camera_id="traffic-cam-north",
+        service_name="traffic_monitoring_service",
         mac_address=host_mac,
         days_valid=365
     )
@@ -52,7 +52,7 @@ def main():
     wrong_mac_file = "demo_wrong_mac.gry"
     create_license_file(
         output_file=wrong_mac_file,
-        camera_id="traffic-cam-north",
+        service_name="traffic_monitoring_service",
         mac_address="11:22:33:44:55:66",  # Intentionally different MAC
         days_valid=365
     )
@@ -66,7 +66,7 @@ def main():
     expired_file = "demo_expired.gry"
     create_license_file(
         output_file=expired_file,
-        camera_id="traffic-cam-north",
+        service_name="traffic_monitoring_service",
         mac_address=host_mac,
         days_valid=-5  # Expired 5 days ago
     )

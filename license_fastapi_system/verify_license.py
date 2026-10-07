@@ -46,24 +46,34 @@ def verify_license(license_path: str = "camera.gry") -> dict:
         print("   -> Possible reasons: Tampered license file, corrupted payload, or wrong master key.")
         sys.exit(1)
 
-    # 3. Expiration Check
-    print("[*] Step 3: Checking license expiration...")
+    # 3. Expiration & Duration Check
+    print("[*] Step 3: Checking license validity duration...")
     try:
-        exp_str = data.get("expires_at", "")
-        # Parse ISO format datetime
+        start_str = data.get("start_date") or data.get("issued_at", "")
+        exp_str = data.get("end_date") or data.get("expires_at", "")
+
+        now_dt = datetime.now(timezone.utc)
+
+        if start_str:
+            start_dt = datetime.fromisoformat(start_str)
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+            if now_dt < start_dt:
+                print(f"\n[FAIL: LICENSE_NOT_YET_ACTIVE] License is not active until {start_dt.isoformat()}")
+                sys.exit(1)
+
         exp_dt = datetime.fromisoformat(exp_str)
         if exp_dt.tzinfo is None:
             exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-            
-        now_dt = datetime.now(timezone.utc)
+
         if now_dt >= exp_dt:
             print(f"\n[FAIL: LICENSE_EXPIRED] License expired on {exp_dt.isoformat()}")
             print(f"   -> Current system UTC time is {now_dt.isoformat()}")
             sys.exit(1)
-            
-        print(f"   [OK] License valid until: {exp_dt.isoformat()}")
+
+        print(f"   [OK] License valid duration: {start_str} to {exp_str}")
     except Exception as e:
-        print(f"\n[FAIL: LICENSE_FORMAT_INVALID] Invalid expiration date in license: {e}")
+        print(f"\n[FAIL: LICENSE_FORMAT_INVALID] Invalid expiration/duration date in license: {e}")
         sys.exit(1)
 
     # 4. Hardware MAC Detection & Comparison
@@ -78,9 +88,7 @@ def verify_license(license_path: str = "camera.gry") -> dict:
         print("\n" + "!"*55)
         print("[FAIL: MAC_ADDRESS_MISMATCH] Hardware validation FAILED!")
         print("   The license is locked to another machine.")
-        print("   -> DO NOT spawn camera container.")
-        print("   -> DO NOT connect to Kafka message broker.")
-        print("   -> DO NOT start video processing service.")
+        print("   -> DO NOT spawn service containers.")
         print("!"*55)
         sys.exit(1)
 
@@ -90,13 +98,14 @@ def verify_license(license_path: str = "camera.gry") -> dict:
     print("\n" + "="*55)
     print(" [SUCCESS] LICENSE FULLY VERIFIED & HARDWARE BOUND")
     print("="*55)
-    print(f" - Status         : AUTHORIZED TO RUN")
-    print(f" - License ID     : {data.get('license_id')}")
-    print(f" - Camera ID      : {data.get('camera_id')}")
-    print(f" - Camera Name    : {data.get('camera_name', 'N/A')}")
-    print(f" - Container Name : {data.get('container_name')}")
-    print(f" - Kafka Topic    : {data.get('topic')} (partition {data.get('partition')})")
-    print(f" - Allowed Features: {', '.join(data.get('features', []))}")
+    print(f" - Status           : AUTHORIZED TO RUN")
+    print(f" - License ID       : {data.get('license_id')}")
+    print(f" - Service Name     : {data.get('service_name', 'vision_analytics_service')}")
+    print(f" - MAC Address      : {licensed_mac}")
+    print(f" - Duration Start   : {data.get('start_date') or data.get('issued_at')}")
+    print(f" - Duration End     : {data.get('end_date') or data.get('expires_at')}")
+    print(f" - Duration Days    : {data.get('duration_days', 'N/A')}")
+    print(f" - Allowed Features : {', '.join(data.get('features', []))}")
     print("="*55 + "\n")
     
     return data

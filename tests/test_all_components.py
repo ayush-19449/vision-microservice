@@ -83,7 +83,7 @@ class TestVisionEcosystem(unittest.TestCase):
             rtsp_url="rtsp://127.0.0.1:8554/test99",
             fps=30,
             features=["anpr", "vehicle_counter"]
-        ))
+        ), enforce_license=False)
         self.assertEqual(created.camera_id, test_cam_id)
         self.assertEqual(created.partition, 99)
 
@@ -166,8 +166,7 @@ class TestVisionEcosystem(unittest.TestCase):
         lic_file = "test_lic.gry"
         create_license_file(
             output_file=lic_file,
-            camera_id="cam_1",
-            camera_name="Test Gate",
+            service_name="test_service",
             features=["anpr", "speed_detection"]
         )
         self.assertTrue(os.path.exists(lic_file))
@@ -177,7 +176,7 @@ class TestVisionEcosystem(unittest.TestCase):
 
         # Decrypt valid
         payload = decrypt_license_data(encrypted)
-        self.assertEqual(payload["camera_id"], "cam_1")
+        self.assertEqual(payload["service_name"], "test_service")
         self.assertIn("anpr", payload["features"])
 
         # Tampered ciphertext check
@@ -201,13 +200,12 @@ class TestVisionEcosystem(unittest.TestCase):
             name="Orchestrator Test Camera",
             rtsp_url="rtsp://127.0.0.1:8554/orchtest",
             features=["anpr", "speed_detection"]
-        ))
+        ), enforce_license=False)
 
         lic_file = "test_orch_lic.gry"
         create_license_file(
             output_file=lic_file,
-            camera_id=test_cam_id,
-            camera_name="Orchestrator Test Camera",
+            service_name="orch_test_service",
             features=["anpr", "speed_detection"]
         )
 

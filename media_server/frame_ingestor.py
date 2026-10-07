@@ -68,35 +68,36 @@ class CameraFrameIngestor:
         if cv2 is None:
             raise ImportError("OpenCV (cv2) is required for frame ingestion.")
 
-        if self.use_test_source or not self.rtsp_url:
-            gst_str = GStreamerPipelineBuilder.build_test_pipeline(fps=self.target_fps)
-            logger.info(f"[{self.camera_id}] Opening GStreamer Test Source: {gst_str}")
-            cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
-            if not cap.isOpened():
-                return None
-            return cap
-
         # 1. Video File Source
-        if self.source_type == "video":
+        if self.source_type == "video" and self.rtsp_url:
             logger.info(f"[{self.camera_id}] Opening local video file source: {self.rtsp_url}")
             cap = cv2.VideoCapture(self.rtsp_url)
-            return cap
+            if cap.isOpened():
+                return cap
+            logger.warning(f"[{self.camera_id}] Could not open video file: {self.rtsp_url}")
 
         # 2. Still Image Source
-        if self.source_type == "image":
+        if self.source_type == "image" and self.rtsp_url:
             logger.info(f"[{self.camera_id}] Single/Batch Image source: {self.rtsp_url}")
-            return None
+            cap = cv2.VideoCapture(self.rtsp_url)
+            if cap.isOpened():
+                return cap
 
         # 3. RTSP Camera Stream (try GStreamer then native OpenCV)
-        gst_str = GStreamerPipelineBuilder.build_rtsp_pipeline(self.rtsp_url, fps=self.target_fps)
-        logger.info(f"[{self.camera_id}] Attempting GStreamer RTSP Pipeline: {gst_str}")
-        cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
-        
-        if not cap.isOpened():
-            logger.info(f"[{self.camera_id}] GStreamer fallback to OpenCV VideoCapture: {self.rtsp_url}")
-            cap = cv2.VideoCapture(self.rtsp_url)
+        if self.rtsp_url:
+            gst_str = GStreamerPipelineBuilder.build_rtsp_pipeline(self.rtsp_url, fps=self.target_fps)
+            logger.info(f"[{self.camera_id}] Attempting GStreamer RTSP Pipeline: {gst_str}")
+            cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
             
-        return cap
+            if not cap.isOpened():
+                logger.info(f"[{self.camera_id}] GStreamer fallback to OpenCV VideoCapture: {self.rtsp_url}")
+                cap = cv2.VideoCapture(self.rtsp_url)
+                
+            if cap.isOpened():
+                return cap
+
+        logger.warning(f"[{self.camera_id}] No valid stream or video source found for URL: {self.rtsp_url}")
+        return None
 
     def _ingest_loop(self):
         """Continuous frame grab, MinIO upload & Kafka produce loop."""
@@ -114,25 +115,20 @@ class CameraFrameIngestor:
             if cap is not None and cap.isOpened():
                 ret, frame = cap.read()
                 if not ret or frame is None:
-                    logger.warning(f"[{self.camera_id}] Frame read failed. Reconnecting in 2s...")
-                    time.sleep(2.0)
-                    cap.release()
-                    cap = self._open_capture()
-                    continue
+                    if self.source_type == "video":
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = cap.read()
+                    if not ret or frame is None:
+                        logger.warning(f"[{self.camera_id}] Frame read failed. Reconnecting in 2s...")
+                        time.sleep(2.0)
+                        cap.release()
+                        cap = self._open_capture()
+                        continue
             else:
-                # Synthetic fallback frame
-                import numpy as np
-                frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-                frame[:] = (35, 35, 35)
-                cv2.putText(
-                    frame,
-                    f"Camera: {self.camera_id} | Partition: {self.partition} | Frame: {self.frame_counter}",
-                    (40, 360),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.1,
-                    (0, 255, 128),
-                    2
-                )
+                logger.warning(f"[{self.camera_id}] Capture stream offline or unreachable. Retrying in 3s...")
+                time.sleep(3.0)
+                cap = self._open_capture()
+                continue
 
             h, w = frame.shape[:2]
             ts_ms = time.time() * 1000.0

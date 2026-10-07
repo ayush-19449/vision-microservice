@@ -163,13 +163,24 @@ class ContainerSpawner:
         licensed_mac = normalize_mac(data.get("mac_address", ""))
         sys_mac = get_system_mac_address()
 
-        # 2. Expiration
+        # 2. Duration / Expiration check
         try:
-            exp_str = data.get("expires_at", "")
+            start_str = data.get("start_date") or data.get("issued_at", "")
+            exp_str = data.get("end_date") or data.get("expires_at", "")
+            now_dt = datetime.now(timezone.utc)
+
+            if start_str:
+                start_dt = datetime.fromisoformat(start_str)
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                if now_dt < start_dt:
+                    return False, f"License is not active until {start_dt.isoformat()}", data
+
             exp_dt = datetime.fromisoformat(exp_str)
             if exp_dt.tzinfo is None:
                 exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) >= exp_dt:
+
+            if now_dt >= exp_dt:
                 return False, f"License expired on {exp_dt.isoformat()}", data
         except Exception as e:
             return False, f"Invalid license expiration format: {e}", data
@@ -178,9 +189,9 @@ class ContainerSpawner:
         if sys_mac != licensed_mac:
             return False, f"MAC mismatch: Host is '{sys_mac}' but license is locked to '{licensed_mac}'", data
 
-        # 4. Camera ID verification
+        # 4. Camera ID verification (optional if present in license)
         licensed_cam = data.get("camera_id")
-        if licensed_cam != cam_id and licensed_cam != "*":
+        if licensed_cam and licensed_cam not in ("*", "all") and licensed_cam != cam_id:
             return False, f"Camera '{cam_id}' is not authorized. License is for '{licensed_cam}'.", data
 
         # 5. Use Case verification
@@ -188,7 +199,7 @@ class ContainerSpawner:
         req_case = use_case.lower().strip()
         if req_case not in licensed_features and "*" not in licensed_features:
             return False, (
-                f"Use case '{use_case}' is not licensed for camera '{cam_id}'. "
+                f"Use case '{use_case}' is not licensed. "
                 f"Authorized use cases: {licensed_features}"
             ), data
 
